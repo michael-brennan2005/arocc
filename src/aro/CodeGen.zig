@@ -1000,9 +1000,44 @@ fn genLval(c: *CodeGen, node: NodeIndex) Error!Ir.Ref {
                 return c.genLval(c.tree.data[data.if3.body + 1]);
             }
         },
-        .member_access_expr,
-        .member_access_ptr_expr,
-        .array_access_expr,
+        .array_access_expr => {
+            const ptr = try c.genExpr(data.bin.lhs);
+            const offset = try c.genExpr(data.bin.rhs);
+            const ty = c.node_ty[@intFromEnum(node)];
+            const offset_ty = c.node_ty[@intFromEnum(data.bin.rhs)];
+
+            // FIXME this code is taken from genPtrArithmetic but with one change
+            // instead of ty.elemType().sizeof(c.comp).? we're doing ty.sizeof(c.comp).?
+            const size = ty.sizeof(c.comp).?;
+            if (size == 1) {
+                return c.builder.addInst(.add, .{ .bin = .{ .lhs = ptr, .rhs = offset } }, try c.genType(ty));
+            }
+
+            const size_inst = try c.builder.addConstant((try Value.int(size, c.comp)).ref(), try c.genType(offset_ty));
+            const offset_inst = try c.addBin(.mul, offset, size_inst, offset_ty);
+            return c.addBin(.add, ptr, offset_inst, offset_ty);
+        },
+        .member_access_expr => {
+            const record = c.node_ty[@intFromEnum(data.member.lhs)].getRecord().?;
+
+            const ptr = try c.genLval(data.member.lhs);
+            const offset = record.fields[data.member.index].layout.offset_bits / 8;
+            const offset_ty = Type{ .specifier = .int };
+
+            const offset_inst = try c.builder.addConstant((try Value.int(offset, c.comp)).ref(), try c.genType(offset_ty));
+            return c.addBin(.add, ptr, offset_inst, offset_ty);
+        },
+        .member_access_ptr_expr => {
+            const ptr = try c.genLval(data.member.lhs);
+            const load_ptr = try c.addUn(.load, ptr, Type{ .specifier = .pointer });
+
+            const record = c.node_ty[@intFromEnum(data.member.lhs)].data.sub_type.getRecord().?;
+            const offset = record.fields[data.member.index].layout.offset_bits / 8;
+            const offset_ty = Type{ .specifier = .int };
+
+            const offset_inst = try c.builder.addConstant((try Value.int(offset, c.comp)).ref(), try c.genType(offset_ty));
+            return c.addBin(.add, load_ptr, offset_inst, offset_ty);
+        },
         .static_compound_literal_expr,
         .thread_local_compound_literal_expr,
         .static_thread_local_compound_literal_expr,
